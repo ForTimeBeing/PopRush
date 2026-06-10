@@ -236,6 +236,15 @@
             SPLITTER: 0xeab308,
             BOMB: 0xef4444
           }
+        },
+        glacier: {
+          name: 'Glacier',
+          colors: {
+            NORMAL: 0x60a5fa,
+            SMALL: 0x93c5fd,
+            SPLITTER: 0x67e8f9,
+            BOMB: 0xef4444
+          }
         }
       };
 
@@ -248,6 +257,13 @@
           label: 'Sunset Skin',
           cost: 140
         },
+        skinGlacier: {
+          key: 'skinGlacier',
+          type: 'skin',
+          value: 'glacier',
+          label: 'Glacier Skin',
+          cost: 220
+        },
         hatCrown: {
           key: 'hatCrown',
           type: 'hat',
@@ -256,6 +272,13 @@
           cost: 120
         },
         hatHalo: { key: 'hatHalo', type: 'hat', value: 'halo', label: 'Halo Hat', cost: 160 },
+        hatPropeller: {
+          key: 'hatPropeller',
+          type: 'hat',
+          value: 'propeller',
+          label: 'Propeller Hat',
+          cost: 240
+        },
         slowTime: {
           key: 'slowTime',
           type: 'upgrade',
@@ -269,6 +292,30 @@
           value: 'bonusPoints',
           label: 'Bonus Points',
           cost: 220
+        },
+        coinEngine: {
+          key: 'coinEngine',
+          type: 'repeatable',
+          value: 'coinEngine',
+          label: 'Coin Engine',
+          baseCost: 140,
+          growth: 1.45
+        },
+        scoreAmp: {
+          key: 'scoreAmp',
+          type: 'repeatable',
+          value: 'scoreAmp',
+          label: 'Score Amp',
+          baseCost: 160,
+          growth: 1.42
+        },
+        timeWarp: {
+          key: 'timeWarp',
+          type: 'repeatable',
+          value: 'timeWarp',
+          label: 'Time Warp',
+          baseCost: 190,
+          growth: 1.5
         }
       };
 
@@ -282,6 +329,11 @@
           upgrades: {
             slowTime: false,
             bonusPoints: false
+          },
+          repeatables: {
+            coinEngine: 0,
+            scoreAmp: 0,
+            timeWarp: 0
           }
         };
       }
@@ -299,7 +351,9 @@
         }
 
         if (Array.isArray(source.ownedHats)) {
-          const validHats = source.ownedHats.filter((hat) => hat === 'none' || hat === 'crown' || hat === 'halo');
+          const validHats = source.ownedHats.filter(
+            (hat) => hat === 'none' || hat === 'crown' || hat === 'halo' || hat === 'propeller'
+          );
           base.ownedHats = Array.from(new Set(['none'].concat(validHats)));
         }
 
@@ -314,6 +368,15 @@
         if (source.upgrades && typeof source.upgrades === 'object') {
           base.upgrades.slowTime = !!source.upgrades.slowTime;
           base.upgrades.bonusPoints = !!source.upgrades.bonusPoints;
+        }
+
+        if (source.repeatables && typeof source.repeatables === 'object') {
+          const keys = Object.keys(base.repeatables);
+          for (let i = 0; i < keys.length; i += 1) {
+            const key = keys[i];
+            const level = Number(source.repeatables[key]);
+            base.repeatables[key] = Number.isFinite(level) && level > 0 ? Math.floor(level) : 0;
+          }
         }
 
         return base;
@@ -394,8 +457,16 @@
 
           this.skinTheme = SKIN_THEMES[this.playerProfile.equippedSkin] || SKIN_THEMES.classic;
           this.equippedHat = this.playerProfile.equippedHat || 'none';
-          this.slowTimeMultiplier = this.playerProfile.upgrades.slowTime ? 0.88 : 1;
-          this.pointsBonusMultiplier = this.playerProfile.upgrades.bonusPoints ? 1.25 : 1;
+          this.repeatables = this.playerProfile.repeatables || {};
+          const slowLevel = this.repeatables.timeWarp || 0;
+          const scoreAmpLevel = this.repeatables.scoreAmp || 0;
+          this.timeWarpLevel = slowLevel;
+          this.timeWarpSpeedFactor = Math.max(0.4, 1 - slowLevel * 0.06);
+          this.timeWarpSpawnFactor = 1 + slowLevel * 0.1;
+          this.slowTimeMultiplier =
+            (this.playerProfile.upgrades.slowTime ? 0.88 : 1) * this.timeWarpSpeedFactor;
+          this.pointsBonusMultiplier =
+            (this.playerProfile.upgrades.bonusPoints ? 1.25 : 1) * (1 + scoreAmpLevel * 0.05);
 
           this.levelConfigs = {
             1: { spawnIntervalMs: 1200, speed: 120, bombChance: 0.1, doubleChance: 0 },
@@ -427,6 +498,10 @@
           });
 
           this.emitHudUpdate();
+
+          if (this.timeWarpLevel > 0) {
+            this.showFloatingScoreText(240, 128, 'TIME WARP Lv' + this.timeWarpLevel, '#93c5fd');
+          }
 
           this.events.once('shutdown', () => {
             this.game.events.off('audioenabledchange', this.onAudioEnabledChange, this);
@@ -510,7 +585,7 @@
           }
 
           this.elapsedSeconds += 1;
-          const targetLevel = Math.min(10, Math.floor(this.elapsedSeconds / 15) + 1);
+          const targetLevel = Math.floor(this.elapsedSeconds / 15) + 1;
 
           if (targetLevel > this.difficultyLevel) {
             this.difficultyLevel = targetLevel;
@@ -520,9 +595,23 @@
           this.emitHudUpdate();
         }
 
+        getDifficultyConfig(level) {
+          if (this.levelConfigs[level]) {
+            return this.levelConfigs[level];
+          }
+
+          const extraLevels = Math.max(0, level - 10);
+          return {
+            spawnIntervalMs: Math.max(170, Math.floor(350 - extraLevels * 9)),
+            speed: Math.floor(280 + extraLevels * 11),
+            bombChance: Math.min(0.42, 0.28 + extraLevels * 0.01),
+            doubleChance: Math.min(0.55, 0.24 + extraLevels * 0.02)
+          };
+        }
+
         applyDifficultyConfig(level, showFlash) {
-          const cfg = this.levelConfigs[level] || this.levelConfigs[10];
-          this.spawnIntervalMs = cfg.spawnIntervalMs;
+          const cfg = this.getDifficultyConfig(level);
+          this.spawnIntervalMs = Math.floor(cfg.spawnIntervalMs * this.timeWarpSpawnFactor);
           this.bubbleSpeed = cfg.speed * this.slowTimeMultiplier;
           this.bombChance = cfg.bombChance;
           this.doubleChance = cfg.doubleChance;
@@ -547,7 +636,7 @@
           this.spawnWeightedBubble();
 
           if (
-            this.difficultyLevel === 10 &&
+            this.difficultyLevel >= 10 &&
             this.bubbles.length < MAX_ACTIVE_BUBBLES &&
             Math.random() < this.doubleChance
           ) {
@@ -818,7 +907,9 @@
         calculateCoinsEarned() {
           const scoreCoins = Math.floor(this.score / 20);
           const survivalCoins = Math.floor(this.elapsedSeconds / 10);
-          return Math.max(1, scoreCoins + survivalCoins);
+          const coinEngineLevel = this.repeatables && this.repeatables.coinEngine ? this.repeatables.coinEngine : 0;
+          const boosted = Math.floor((scoreCoins + survivalCoins) * (1 + coinEngineLevel * 0.2));
+          return Math.max(1, boosted);
         }
 
         setPaused(paused) {
@@ -1080,6 +1171,13 @@
           } else if (this.equippedHat === 'halo') {
             gfx.lineStyle(3, 0xfef08a, 0.9);
             gfx.strokeEllipse(0, -type.radius * 1.08, type.radius * 1.05, type.radius * 0.34);
+          } else if (this.equippedHat === 'propeller') {
+            gfx.fillStyle(0x94a3b8, 0.95);
+            gfx.fillRect(-2, -type.radius * 1.22, 4, type.radius * 0.3);
+            gfx.fillStyle(0xf87171, 0.95);
+            gfx.fillEllipse(-type.radius * 0.28, -type.radius * 1.23, type.radius * 0.5, type.radius * 0.18);
+            gfx.fillStyle(0x60a5fa, 0.95);
+            gfx.fillEllipse(type.radius * 0.28, -type.radius * 1.23, type.radius * 0.5, type.radius * 0.18);
           }
         }
       }
@@ -1335,6 +1433,8 @@
         createShopOverlay() {
           this.shopContainer = this.add.container(0, 0);
           this.shopContainer.setDepth(950);
+          this.shopPage = 0;
+          this.shopPageSize = 6;
 
           const dim = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.66).setInteractive();
           const panel = this.add.rectangle(240, 334, 440, 520, 0x08152a, 0.94);
@@ -1354,7 +1454,38 @@
           });
           this.shopCoinsText.setOrigin(0.5);
 
-          const closeButton = this.createButton(240, 564, 'CLOSE', {
+          const scrollHint = this.add.text(240, 172, 'Use pages to browse items', {
+            color: '#94a3b8',
+            fontSize: '14px'
+          });
+          scrollHint.setOrigin(0.5);
+
+          this.shopPageText = this.add.text(240, 500, 'Page 1/1', {
+            color: '#cbd5e1',
+            fontSize: '16px',
+            fontStyle: 'bold'
+          });
+          this.shopPageText.setOrigin(0.5);
+
+          this.shopPrevButton = this.createButton(120, 500, 'PREV', {
+            width: 110,
+            height: 40,
+            fontSize: '18px'
+          });
+          this.shopPrevButton.on('pointerdown', () => {
+            this.setShopPage(this.shopPage - 1);
+          });
+
+          this.shopNextButton = this.createButton(360, 500, 'NEXT', {
+            width: 110,
+            height: 40,
+            fontSize: '18px'
+          });
+          this.shopNextButton.on('pointerdown', () => {
+            this.setShopPage(this.shopPage + 1);
+          });
+
+          const closeButton = this.createButton(240, 556, 'CLOSE', {
             width: 190,
             height: 50,
             fontSize: '24px'
@@ -1366,17 +1497,37 @@
           this.shopButtons = [];
           this.shopButtons.push(this.createShopButton(136, 220, SHOP_ITEMS.skinNeon));
           this.shopButtons.push(this.createShopButton(344, 220, SHOP_ITEMS.skinSunset));
-          this.shopButtons.push(this.createShopButton(136, 300, SHOP_ITEMS.hatCrown));
-          this.shopButtons.push(this.createShopButton(344, 300, SHOP_ITEMS.hatHalo));
-          this.shopButtons.push(this.createShopButton(136, 380, SHOP_ITEMS.slowTime));
-          this.shopButtons.push(this.createShopButton(344, 380, SHOP_ITEMS.bonusPoints));
+          this.shopButtons.push(this.createShopButton(136, 300, SHOP_ITEMS.skinGlacier));
+          this.shopButtons.push(this.createShopButton(344, 300, SHOP_ITEMS.hatCrown));
+          this.shopButtons.push(this.createShopButton(136, 380, SHOP_ITEMS.hatHalo));
+          this.shopButtons.push(this.createShopButton(344, 380, SHOP_ITEMS.hatPropeller));
+          this.shopButtons.push(this.createShopButton(136, 220, SHOP_ITEMS.slowTime));
+          this.shopButtons.push(this.createShopButton(344, 220, SHOP_ITEMS.bonusPoints));
+          this.shopButtons.push(this.createShopButton(136, 300, SHOP_ITEMS.coinEngine));
+          this.shopButtons.push(this.createShopButton(344, 300, SHOP_ITEMS.scoreAmp));
+          this.shopButtons.push(this.createShopButton(136, 380, SHOP_ITEMS.timeWarp));
 
-          this.shopContainer.add([dim, panel, title, this.shopCoinsText, closeButton, closeButton.label]);
+          this.shopContainer.add([
+            dim,
+            panel,
+            title,
+            this.shopCoinsText,
+            scrollHint,
+            this.shopPrevButton,
+            this.shopPrevButton.label,
+            this.shopPageText,
+            this.shopNextButton,
+            this.shopNextButton.label,
+            closeButton,
+            closeButton.label
+          ]);
 
           for (let i = 0; i < this.shopButtons.length; i += 1) {
             const entry = this.shopButtons[i];
             this.shopContainer.add([entry.button, entry.button.label, entry.subtitle]);
           }
+
+          this.updateShopPagination();
 
           this.shopContainer.setVisible(false);
         }
@@ -1384,6 +1535,7 @@
         openShop() {
           if (this.shopContainer) {
             this.refreshShopButtons();
+            this.setShopPage(0);
             this.shopContainer.setVisible(true);
           }
         }
@@ -1394,15 +1546,88 @@
           }
         }
 
+        getShopTotalPages() {
+          if (!this.shopButtons || this.shopButtons.length === 0) {
+            return 1;
+          }
+          return Math.max(1, Math.ceil(this.shopButtons.length / this.shopPageSize));
+        }
+
+        setShopPage(nextPage) {
+          const totalPages = this.getShopTotalPages();
+          this.shopPage = Phaser.Math.Clamp(nextPage, 0, totalPages - 1);
+          this.updateShopPagination();
+        }
+
+        updateShopPagination() {
+          if (!this.shopButtons) {
+            return;
+          }
+
+          const totalPages = this.getShopTotalPages();
+          const start = this.shopPage * this.shopPageSize;
+          const end = start + this.shopPageSize;
+
+          for (let i = 0; i < this.shopButtons.length; i += 1) {
+            const entry = this.shopButtons[i];
+            const onPage = i >= start && i < end;
+
+            entry.button.setVisible(onPage);
+            entry.button.label.setVisible(onPage);
+            entry.subtitle.setVisible(onPage);
+
+            if (onPage) {
+              entry.button.setInteractive({ useHandCursor: true });
+              const localIndex = i - start;
+              const col = localIndex % 2;
+              const row = Math.floor(localIndex / 2);
+              const slotX = col === 0 ? 136 : 344;
+              const slotY = 220 + row * 80;
+              entry.button.setPosition(slotX, slotY);
+              entry.button.label.setPosition(slotX, slotY - 9);
+              entry.subtitle.setPosition(slotX, slotY + 12);
+            } else {
+              entry.button.disableInteractive();
+            }
+          }
+
+          if (this.shopPageText) {
+            this.shopPageText.setText('Page ' + (this.shopPage + 1) + '/' + totalPages);
+          }
+
+          const canPrev = this.shopPage > 0;
+          const canNext = this.shopPage < totalPages - 1;
+
+          if (this.shopPrevButton) {
+            this.shopPrevButton.setAlpha(canPrev ? 1 : 0.45);
+            this.shopPrevButton.label.setAlpha(canPrev ? 1 : 0.45);
+            if (canPrev) {
+              this.shopPrevButton.setInteractive({ useHandCursor: true });
+            } else {
+              this.shopPrevButton.disableInteractive();
+            }
+          }
+
+          if (this.shopNextButton) {
+            this.shopNextButton.setAlpha(canNext ? 1 : 0.45);
+            this.shopNextButton.label.setAlpha(canNext ? 1 : 0.45);
+            if (canNext) {
+              this.shopNextButton.setInteractive({ useHandCursor: true });
+            } else {
+              this.shopNextButton.disableInteractive();
+            }
+          }
+        }
+
         createShopButton(x, y, item) {
           const button = this.createButton(x, y, item.label, {
-            width: 188,
-            height: 54,
-            fontSize: '17px',
+            width: 182,
+            height: 52,
+            fontSize: '15px',
             labelYOffset: -9
           });
 
-          const subtitle = this.add.text(x, y + 13, '', {
+          const subtitle = this.add.text(x, y + 12, '', {
             color: '#cbd5e1',
             fontSize: '12px',
             fontStyle: 'bold'
@@ -1433,6 +1658,15 @@
               profile.upgrades[item.value] = true;
               changed = true;
             }
+          } else if (item.type === 'repeatable') {
+            const level = profile.repeatables[item.value] || 0;
+            const cost = this.getRepeatableCost(item, level);
+            if (profile.coins < cost) {
+              return;
+            }
+            profile.coins -= cost;
+            profile.repeatables[item.value] = level + 1;
+            changed = true;
           } else if (item.type === 'skin') {
             const isOwned = profile.ownedSkins.includes(item.value);
             if (!isOwned) {
@@ -1480,6 +1714,12 @@
             return 'BUY ' + item.cost;
           }
 
+          if (item.type === 'repeatable') {
+            const level = this.playerProfile.repeatables[item.value] || 0;
+            const cost = this.getRepeatableCost(item, level);
+            return 'LV ' + level + ' BUY ' + cost;
+          }
+
           if (item.type === 'skin') {
             if (!this.playerProfile.ownedSkins.includes(item.value)) {
               return 'BUY ' + item.cost;
@@ -1499,6 +1739,10 @@
           return 'EQUIP';
         }
 
+        getRepeatableCost(item, level) {
+          return Math.floor(item.baseCost * Math.pow(item.growth, level));
+        }
+
         refreshShopButtons() {
           if (this.shopCoinsText) {
             this.shopCoinsText.setText('Coins: ' + this.playerProfile.coins);
@@ -1512,7 +1756,9 @@
               ? 'No Hat'
               : this.playerProfile.equippedHat === 'crown'
                 ? 'Crown'
-                : 'Halo';
+                : this.playerProfile.equippedHat === 'halo'
+                  ? 'Halo'
+                  : 'Propeller';
             this.equippedSummaryText.setText('Equipped: ' + skinName + ' / ' + hatName);
           }
 
@@ -1524,6 +1770,8 @@
             const entry = this.shopButtons[i];
             entry.subtitle.setText(this.getShopStatus(entry.item));
           }
+
+          this.updateShopPagination();
         }
 
         createGameOverOverlay() {
