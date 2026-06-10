@@ -248,6 +248,28 @@
         }
       };
 
+      const SKIN_KEY_ALIASES = {
+        skinNeon: 'neon',
+        skinSunset: 'sunset',
+        skinGlacier: 'glacier'
+      };
+
+      function normalizeSkinKey(skin) {
+        if (typeof skin !== 'string') {
+          return 'classic';
+        }
+
+        if (SKIN_THEMES[skin]) {
+          return skin;
+        }
+
+        if (SKIN_KEY_ALIASES[skin]) {
+          return SKIN_KEY_ALIASES[skin];
+        }
+
+        return 'classic';
+      }
+
       const SHOP_ITEMS = {
         skinNeon: { key: 'skinNeon', type: 'skin', value: 'neon', label: 'Neon Skin', cost: 80 },
         skinSunset: {
@@ -346,7 +368,9 @@
         base.coins = Number.isFinite(coins) && coins > 0 ? Math.floor(coins) : 0;
 
         if (Array.isArray(source.ownedSkins)) {
-          const validSkins = source.ownedSkins.filter((skin) => !!SKIN_THEMES[skin]);
+          const validSkins = source.ownedSkins
+            .map((skin) => normalizeSkinKey(skin))
+            .filter((skin) => !!SKIN_THEMES[skin]);
           base.ownedSkins = Array.from(new Set(['classic'].concat(validSkins)));
         }
 
@@ -357,8 +381,9 @@
           base.ownedHats = Array.from(new Set(['none'].concat(validHats)));
         }
 
-        if (typeof source.equippedSkin === 'string' && base.ownedSkins.includes(source.equippedSkin)) {
-          base.equippedSkin = source.equippedSkin;
+        const normalizedEquippedSkin = normalizeSkinKey(source.equippedSkin);
+        if (base.ownedSkins.includes(normalizedEquippedSkin)) {
+          base.equippedSkin = normalizedEquippedSkin;
         }
 
         if (typeof source.equippedHat === 'string' && base.ownedHats.includes(source.equippedHat)) {
@@ -455,7 +480,8 @@
           this.wobbleAmplitude = 15;
           this.wobbleFrequency = 3.2;
 
-          this.skinTheme = SKIN_THEMES[this.playerProfile.equippedSkin] || SKIN_THEMES.classic;
+          this.skinThemeKey = normalizeSkinKey(this.playerProfile.equippedSkin);
+          this.skinTheme = SKIN_THEMES[this.skinThemeKey] || SKIN_THEMES.classic;
           this.equippedHat = this.playerProfile.equippedHat || 'none';
           this.repeatables = this.playerProfile.repeatables || {};
           const slowLevel = this.repeatables.timeWarp || 0;
@@ -1155,6 +1181,11 @@
             const xSize = type.radius * 0.45;
             gfx.lineBetween(-xSize, -xSize, xSize, xSize);
             gfx.lineBetween(-xSize, xSize, xSize, -xSize);
+          }
+
+          if (this.skinThemeKey !== 'classic') {
+            gfx.lineStyle(3, bubbleColor, 0.65);
+            gfx.strokeCircle(0, 0, type.radius + 3);
           }
 
           if (this.equippedHat === 'crown') {
