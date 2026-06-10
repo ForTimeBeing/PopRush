@@ -206,9 +206,170 @@
       const BUBBLE_POOL_SIZE = 30;
       const MAX_ACTIVE_BUBBLES = 25;
 
+      const PROFILE_STORAGE_KEY = 'pop_rush_profile';
+      const DEBUG_COIN_GRANT = 10000000;
+
+      const SKIN_THEMES = {
+        classic: {
+          name: 'Classic',
+          colors: {
+            NORMAL: 0x3b82f6,
+            SMALL: 0x22d3ee,
+            SPLITTER: 0x22c55e,
+            BOMB: 0xef4444
+          }
+        },
+        neon: {
+          name: 'Neon',
+          colors: {
+            NORMAL: 0xa855f7,
+            SMALL: 0x06b6d4,
+            SPLITTER: 0x84cc16,
+            BOMB: 0xef4444
+          }
+        },
+        sunset: {
+          name: 'Sunset',
+          colors: {
+            NORMAL: 0xf97316,
+            SMALL: 0xf59e0b,
+            SPLITTER: 0xeab308,
+            BOMB: 0xef4444
+          }
+        }
+      };
+
+      const SHOP_ITEMS = {
+        skinNeon: { key: 'skinNeon', type: 'skin', value: 'neon', label: 'Neon Skin', cost: 80 },
+        skinSunset: {
+          key: 'skinSunset',
+          type: 'skin',
+          value: 'sunset',
+          label: 'Sunset Skin',
+          cost: 140
+        },
+        hatCrown: {
+          key: 'hatCrown',
+          type: 'hat',
+          value: 'crown',
+          label: 'Crown Hat',
+          cost: 120
+        },
+        hatHalo: { key: 'hatHalo', type: 'hat', value: 'halo', label: 'Halo Hat', cost: 160 },
+        slowTime: {
+          key: 'slowTime',
+          type: 'upgrade',
+          value: 'slowTime',
+          label: 'Slow Time',
+          cost: 200
+        },
+        bonusPoints: {
+          key: 'bonusPoints',
+          type: 'upgrade',
+          value: 'bonusPoints',
+          label: 'Bonus Points',
+          cost: 220
+        }
+      };
+
+      function createDefaultProfile() {
+        return {
+          coins: 0,
+          ownedSkins: ['classic'],
+          equippedSkin: 'classic',
+          ownedHats: ['none'],
+          equippedHat: 'none',
+          upgrades: {
+            slowTime: false,
+            bonusPoints: false
+          }
+        };
+      }
+
+      function normalizeProfile(raw) {
+        const base = createDefaultProfile();
+        const source = raw && typeof raw === 'object' ? raw : {};
+
+        const coins = Number(source.coins);
+        base.coins = Number.isFinite(coins) && coins > 0 ? Math.floor(coins) : 0;
+
+        if (Array.isArray(source.ownedSkins)) {
+          const validSkins = source.ownedSkins.filter((skin) => !!SKIN_THEMES[skin]);
+          base.ownedSkins = Array.from(new Set(['classic'].concat(validSkins)));
+        }
+
+        if (Array.isArray(source.ownedHats)) {
+          const validHats = source.ownedHats.filter((hat) => hat === 'none' || hat === 'crown' || hat === 'halo');
+          base.ownedHats = Array.from(new Set(['none'].concat(validHats)));
+        }
+
+        if (typeof source.equippedSkin === 'string' && base.ownedSkins.includes(source.equippedSkin)) {
+          base.equippedSkin = source.equippedSkin;
+        }
+
+        if (typeof source.equippedHat === 'string' && base.ownedHats.includes(source.equippedHat)) {
+          base.equippedHat = source.equippedHat;
+        }
+
+        if (source.upgrades && typeof source.upgrades === 'object') {
+          base.upgrades.slowTime = !!source.upgrades.slowTime;
+          base.upgrades.bonusPoints = !!source.upgrades.bonusPoints;
+        }
+
+        return base;
+      }
+
+      async function safeCloudLoadProfile() {
+        if (window.ytgame && ytgame.game && typeof ytgame.game.loadData === 'function') {
+          try {
+            const result = ytgame.game.loadData(PROFILE_STORAGE_KEY);
+            const data = result && typeof result.then === 'function' ? await result : result;
+            if (data && typeof data === 'object') {
+              return normalizeProfile(data);
+            }
+            if (typeof data === 'string') {
+              return normalizeProfile(JSON.parse(data));
+            }
+          } catch (error) {
+            // Fall back to local storage below.
+          }
+        }
+
+        try {
+          const local = localStorage.getItem(PROFILE_STORAGE_KEY);
+          if (!local) {
+            return createDefaultProfile();
+          }
+          return normalizeProfile(JSON.parse(local));
+        } catch (error) {
+          return createDefaultProfile();
+        }
+      }
+
+      async function safeCloudSaveProfile(profile) {
+        const normalized = normalizeProfile(profile);
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(normalized));
+
+        if (window.ytgame && ytgame.game && typeof ytgame.game.saveData === 'function') {
+          try {
+            const result = ytgame.game.saveData(PROFILE_STORAGE_KEY, normalized);
+            if (result && typeof result.then === 'function') {
+              await result;
+            }
+          } catch (error) {
+            // Local storage fallback is already written.
+          }
+        }
+      }
+
       class GameScene extends Phaser.Scene {
         constructor() {
           super('GameScene');
+        }
+
+        init(data) {
+          const incomingProfile = data && data.profile ? data.profile : createDefaultProfile();
+          this.playerProfile = normalizeProfile(incomingProfile);
         }
 
         create() {
@@ -230,6 +391,11 @@
           this.nextSpawnAt = 0;
           this.wobbleAmplitude = 15;
           this.wobbleFrequency = 3.2;
+
+          this.skinTheme = SKIN_THEMES[this.playerProfile.equippedSkin] || SKIN_THEMES.classic;
+          this.equippedHat = this.playerProfile.equippedHat || 'none';
+          this.slowTimeMultiplier = this.playerProfile.upgrades.slowTime ? 0.88 : 1;
+          this.pointsBonusMultiplier = this.playerProfile.upgrades.bonusPoints ? 1.25 : 1;
 
           this.levelConfigs = {
             1: { spawnIntervalMs: 1200, speed: 120, bombChance: 0.1, doubleChance: 0 },
@@ -357,7 +523,7 @@
         applyDifficultyConfig(level, showFlash) {
           const cfg = this.levelConfigs[level] || this.levelConfigs[10];
           this.spawnIntervalMs = cfg.spawnIntervalMs;
-          this.bubbleSpeed = cfg.speed;
+          this.bubbleSpeed = cfg.speed * this.slowTimeMultiplier;
           this.bombChance = cfg.bombChance;
           this.doubleChance = cfg.doubleChance;
 
@@ -476,15 +642,15 @@
 
           this.incrementCombo();
           const multiplier = this.getComboMultiplier();
-          const totalPoints = type.points * multiplier;
+          const totalPoints = Math.floor(type.points * multiplier * this.pointsBonusMultiplier);
           this.score += totalPoints;
           this.showFloatingScoreText(
             bubbleX,
             bubbleY,
-            '+' + type.points + 'x' + multiplier,
+            '+' + totalPoints,
             this.getScoreColor(type.key)
           );
-          this.spawnPopParticles(bubbleX, bubbleY, type.color);
+          this.spawnPopParticles(bubbleX, bubbleY, this.getBubbleThemeColor(type.key));
           this.playPopSound(type.key);
           this.emitHudUpdate();
 
@@ -570,13 +736,19 @@
         }
 
         getScoreColor(typeKey) {
+          const palette = this.skinTheme && this.skinTheme.colors ? this.skinTheme.colors : SKIN_THEMES.classic.colors;
           if (typeKey === BUBBLE_TYPES.NORMAL.key) {
-            return '#60a5fa';
+            return '#' + palette.NORMAL.toString(16).padStart(6, '0');
           }
           if (typeKey === BUBBLE_TYPES.SMALL.key) {
-            return '#22d3ee';
+            return '#' + palette.SMALL.toString(16).padStart(6, '0');
           }
-          return '#22c55e';
+          return '#' + palette.SPLITTER.toString(16).padStart(6, '0');
+        }
+
+        getBubbleThemeColor(typeKey) {
+          const palette = this.skinTheme && this.skinTheme.colors ? this.skinTheme.colors : SKIN_THEMES.classic.colors;
+          return palette[typeKey] || BUBBLE_TYPES.NORMAL.color;
         }
 
         incrementCombo() {
@@ -637,7 +809,16 @@
 
           this.playGameOverSound();
 
-          this.game.events.emit('gameover', { finalScore: this.score });
+          this.game.events.emit('gameover', {
+            finalScore: this.score,
+            coinsEarned: this.calculateCoinsEarned()
+          });
+        }
+
+        calculateCoinsEarned() {
+          const scoreCoins = Math.floor(this.score / 20);
+          const survivalCoins = Math.floor(this.elapsedSeconds / 10);
+          return Math.max(1, scoreCoins + survivalCoins);
         }
 
         setPaused(paused) {
@@ -863,7 +1044,10 @@
         drawBubbleGraphics(gfx, type) {
           gfx.clear();
 
-          gfx.fillStyle(type.color, 0.78);
+          const palette = this.skinTheme && this.skinTheme.colors ? this.skinTheme.colors : SKIN_THEMES.classic.colors;
+          const bubbleColor = palette[type.key] || type.color;
+
+          gfx.fillStyle(bubbleColor, 0.78);
           gfx.fillCircle(0, 0, type.radius);
 
           gfx.lineStyle(2, 0xffffff, 0.22);
@@ -881,6 +1065,22 @@
             gfx.lineBetween(-xSize, -xSize, xSize, xSize);
             gfx.lineBetween(-xSize, xSize, xSize, -xSize);
           }
+
+          if (this.equippedHat === 'crown') {
+            gfx.fillStyle(0xfbbf24, 0.95);
+            gfx.fillTriangle(
+              -type.radius * 0.45,
+              -type.radius * 1.08,
+              0,
+              -type.radius * 1.45,
+              type.radius * 0.45,
+              -type.radius * 1.08
+            );
+            gfx.fillRect(-type.radius * 0.5, -type.radius * 1.08, type.radius, type.radius * 0.16);
+          } else if (this.equippedHat === 'halo') {
+            gfx.lineStyle(3, 0xfef08a, 0.9);
+            gfx.strokeEllipse(0, -type.radius * 1.08, type.radius * 1.05, type.radius * 0.34);
+          }
         }
       }
 
@@ -892,6 +1092,7 @@
         create() {
           this.bestScoreKey = 'pop_rush_best_score';
           this.bestScore = 0;
+          this.playerProfile = createDefaultProfile();
           this.gameReadySent = false;
           this.isPausedState = false;
           this.audioEnabled = safeIsAudioEnabled();
@@ -922,6 +1123,7 @@
 
           this.showMainMenu();
           this.loadBestScoreFromCloud();
+          this.loadPlayerProfile();
           this.events.on('shutdown', this.cleanupEvents, this);
           this.events.on('destroy', this.cleanupEvents, this);
         }
@@ -978,6 +1180,7 @@
 
         createHud() {
           this.hudContainer = this.add.container(0, 0);
+          this.lastHudLives = 3;
 
           this.lifeIcons = [];
           for (let i = 0; i < 3; i += 1) {
@@ -1022,25 +1225,57 @@
           this.hudContainer.setVisible(false);
         }
 
+        animateLifeLossIcon(icon) {
+          if (!icon) {
+            return;
+          }
+
+          const burst = this.add.circle(icon.x, icon.y + 12, 4, 0xf87171, 0.9);
+          this.hudContainer.add(burst);
+
+          this.tweens.add({
+            targets: burst,
+            scaleX: 8,
+            scaleY: 8,
+            alpha: 0,
+            duration: 280,
+            ease: 'Cubic.Out',
+            onComplete: () => {
+              burst.destroy();
+            }
+          });
+
+          this.tweens.add({
+            targets: icon,
+            scaleX: 1.38,
+            scaleY: 1.38,
+            alpha: 0.12,
+            duration: 120,
+            yoyo: true,
+            repeat: 1,
+            ease: 'Sine.Out'
+          });
+        }
+
         createMainMenu() {
           this.menuContainer = this.add.container(0, 0);
 
-          const menuBlock = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.34).setInteractive();
-          const title = this.add.text(240, 198, 'POP RUSH 🫧', {
+          const menuBlock = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.4);
+          const title = this.add.text(240, 92, 'POP RUSH 🫧', {
             color: '#ffffff',
-            fontSize: '56px',
+            fontSize: '52px',
             fontStyle: 'bold'
           });
           title.setOrigin(0.5);
           title.setPadding(0, 10, 0, 0);
 
-          this.menuBestText = this.add.text(240, 278, 'Best: ' + this.bestScore, {
+          this.menuBestText = this.add.text(240, 146, 'Best: ' + this.bestScore, {
             color: '#fbbf24',
-            fontSize: '28px'
+            fontSize: '26px'
           });
           this.menuBestText.setOrigin(0.5);
 
-          this.tapToPlay = this.add.text(240, 410, 'TAP TO PLAY', {
+          this.tapToPlay = this.add.text(240, 196, 'TAP TO PLAY', {
             color: '#ffffff',
             fontSize: '34px',
             fontStyle: 'bold'
@@ -1056,11 +1291,239 @@
             ease: 'Sine.InOut'
           });
 
-          menuBlock.on('pointerdown', () => {
+          const playButton = this.createButton(240, 256, 'PLAY', {
+            width: 190,
+            height: 50,
+            fontSize: '24px'
+          });
+          playButton.on('pointerdown', () => {
             this.startGame();
           });
 
-          this.menuContainer.add([menuBlock, title, this.menuBestText, this.tapToPlay]);
+          const openShopButton = this.createButton(240, 322, 'SHOP', {
+            width: 190,
+            height: 50,
+            fontSize: '24px'
+          });
+          openShopButton.on('pointerdown', () => {
+            this.openShop();
+          });
+
+          this.equippedSummaryText = this.add.text(240, 394, '', {
+            color: '#cbd5e1',
+            fontSize: '18px'
+          });
+          this.equippedSummaryText.setOrigin(0.5);
+
+          this.menuContainer.add([
+            menuBlock,
+            title,
+            this.menuBestText,
+            this.tapToPlay,
+            playButton,
+            playButton.label,
+            openShopButton,
+            openShopButton.label,
+            this.equippedSummaryText
+          ]);
+
+          this.createShopOverlay();
+
+          this.refreshShopButtons();
+        }
+
+        createShopOverlay() {
+          this.shopContainer = this.add.container(0, 0);
+          this.shopContainer.setDepth(950);
+
+          const dim = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.66).setInteractive();
+          const panel = this.add.rectangle(240, 334, 440, 520, 0x08152a, 0.94);
+          panel.setStrokeStyle(2, 0x94a3b8, 0.75);
+
+          const title = this.add.text(240, 110, 'SHOP', {
+            color: '#e2e8f0',
+            fontSize: '38px',
+            fontStyle: 'bold'
+          });
+          title.setOrigin(0.5);
+
+          this.shopCoinsText = this.add.text(240, 148, 'Coins: 0', {
+            color: '#86efac',
+            fontSize: '26px',
+            fontStyle: 'bold'
+          });
+          this.shopCoinsText.setOrigin(0.5);
+
+          const closeButton = this.createButton(240, 564, 'CLOSE', {
+            width: 190,
+            height: 50,
+            fontSize: '24px'
+          });
+          closeButton.on('pointerdown', () => {
+            this.closeShop();
+          });
+
+          this.shopButtons = [];
+          this.shopButtons.push(this.createShopButton(136, 220, SHOP_ITEMS.skinNeon));
+          this.shopButtons.push(this.createShopButton(344, 220, SHOP_ITEMS.skinSunset));
+          this.shopButtons.push(this.createShopButton(136, 300, SHOP_ITEMS.hatCrown));
+          this.shopButtons.push(this.createShopButton(344, 300, SHOP_ITEMS.hatHalo));
+          this.shopButtons.push(this.createShopButton(136, 380, SHOP_ITEMS.slowTime));
+          this.shopButtons.push(this.createShopButton(344, 380, SHOP_ITEMS.bonusPoints));
+
+          this.shopContainer.add([dim, panel, title, this.shopCoinsText, closeButton, closeButton.label]);
+
+          for (let i = 0; i < this.shopButtons.length; i += 1) {
+            const entry = this.shopButtons[i];
+            this.shopContainer.add([entry.button, entry.button.label, entry.subtitle]);
+          }
+
+          this.shopContainer.setVisible(false);
+        }
+
+        openShop() {
+          if (this.shopContainer) {
+            this.refreshShopButtons();
+            this.shopContainer.setVisible(true);
+          }
+        }
+
+        closeShop() {
+          if (this.shopContainer) {
+            this.shopContainer.setVisible(false);
+          }
+        }
+
+        createShopButton(x, y, item) {
+          const button = this.createButton(x, y, item.label, {
+            width: 188,
+            height: 54,
+            fontSize: '17px',
+            labelYOffset: -9
+          });
+
+          const subtitle = this.add.text(x, y + 13, '', {
+            color: '#cbd5e1',
+            fontSize: '12px',
+            fontStyle: 'bold'
+          });
+          subtitle.setOrigin(0.5);
+
+          button.on('pointerdown', () => {
+            this.handleShopPurchase(item);
+          });
+
+          return { item: item, button: button, subtitle: subtitle };
+        }
+
+        handleShopPurchase(item) {
+          if (!item) {
+            return;
+          }
+
+          const profile = this.playerProfile;
+          let changed = false;
+
+          if (item.type === 'upgrade') {
+            if (!profile.upgrades[item.value]) {
+              if (profile.coins < item.cost) {
+                return;
+              }
+              profile.coins -= item.cost;
+              profile.upgrades[item.value] = true;
+              changed = true;
+            }
+          } else if (item.type === 'skin') {
+            const isOwned = profile.ownedSkins.includes(item.value);
+            if (!isOwned) {
+              if (profile.coins < item.cost) {
+                return;
+              }
+              profile.coins -= item.cost;
+              profile.ownedSkins.push(item.value);
+              changed = true;
+            }
+
+            if (profile.equippedSkin !== item.value) {
+              profile.equippedSkin = item.value;
+              changed = true;
+            }
+          } else if (item.type === 'hat') {
+            const isOwned = profile.ownedHats.includes(item.value);
+            if (!isOwned) {
+              if (profile.coins < item.cost) {
+                return;
+              }
+              profile.coins -= item.cost;
+              profile.ownedHats.push(item.value);
+              changed = true;
+            }
+
+            if (profile.equippedHat !== item.value) {
+              profile.equippedHat = item.value;
+              changed = true;
+            }
+          }
+
+          if (changed) {
+            this.playerProfile = normalizeProfile(profile);
+            this.refreshShopButtons();
+            this.savePlayerProfile();
+          }
+        }
+
+        getShopStatus(item) {
+          if (item.type === 'upgrade') {
+            if (this.playerProfile.upgrades[item.value]) {
+              return 'OWNED';
+            }
+            return 'BUY ' + item.cost;
+          }
+
+          if (item.type === 'skin') {
+            if (!this.playerProfile.ownedSkins.includes(item.value)) {
+              return 'BUY ' + item.cost;
+            }
+            if (this.playerProfile.equippedSkin === item.value) {
+              return 'ACTIVE';
+            }
+            return 'EQUIP';
+          }
+
+          if (!this.playerProfile.ownedHats.includes(item.value)) {
+            return 'BUY ' + item.cost;
+          }
+          if (this.playerProfile.equippedHat === item.value) {
+            return 'ACTIVE';
+          }
+          return 'EQUIP';
+        }
+
+        refreshShopButtons() {
+          if (this.shopCoinsText) {
+            this.shopCoinsText.setText('Coins: ' + this.playerProfile.coins);
+          }
+
+          if (this.equippedSummaryText) {
+            const skinName = SKIN_THEMES[this.playerProfile.equippedSkin]
+              ? SKIN_THEMES[this.playerProfile.equippedSkin].name
+              : 'Classic';
+            const hatName = this.playerProfile.equippedHat === 'none'
+              ? 'No Hat'
+              : this.playerProfile.equippedHat === 'crown'
+                ? 'Crown'
+                : 'Halo';
+            this.equippedSummaryText.setText('Equipped: ' + skinName + ' / ' + hatName);
+          }
+
+          if (!this.shopButtons) {
+            return;
+          }
+
+          for (let i = 0; i < this.shopButtons.length; i += 1) {
+            const entry = this.shopButtons[i];
+            entry.subtitle.setText(this.getShopStatus(entry.item));
+          }
         }
 
         createGameOverOverlay() {
@@ -1086,7 +1549,14 @@
           });
           this.bestScoreText.setOrigin(0.5);
 
-          this.newBestText = this.add.text(240, 358, 'NEW BEST! 🏆', {
+          this.coinsEarnedText = this.add.text(240, 354, 'Coins Earned: +0', {
+            color: '#86efac',
+            fontSize: '28px',
+            fontStyle: 'bold'
+          });
+          this.coinsEarnedText.setOrigin(0.5);
+
+          this.newBestText = this.add.text(240, 390, 'NEW BEST! 🏆', {
             color: '#fbbf24',
             fontSize: '30px',
             fontStyle: 'bold'
@@ -1094,12 +1564,12 @@
           this.newBestText.setOrigin(0.5);
           this.newBestText.setVisible(false);
 
-          const playAgain = this.createButton(240, 436, 'PLAY AGAIN');
+          const playAgain = this.createButton(240, 458, 'PLAY AGAIN');
           playAgain.on('pointerdown', () => {
             this.startGame();
           });
 
-          const mainMenu = this.createButton(240, 506, 'MAIN MENU');
+          const mainMenu = this.createButton(240, 528, 'MAIN MENU');
           mainMenu.on('pointerdown', () => {
             this.showMainMenu();
           });
@@ -1109,6 +1579,7 @@
             overTitle,
             this.finalScoreText,
             this.bestScoreText,
+            this.coinsEarnedText,
             this.newBestText,
             playAgain,
             playAgain.label,
@@ -1132,11 +1603,20 @@
           this.pauseOverlay.setVisible(false);
         }
 
-        createButton(x, y, text) {
-          const button = this.add.rectangle(x, y, 240, 56, 0x1f2937, 0.95).setStrokeStyle(2, 0xffffff, 1).setInteractive({ useHandCursor: true });
-          const label = this.add.text(x, y, text, {
+        createButton(x, y, text, options) {
+          const opts = options || {};
+          const width = opts.width || 240;
+          const height = opts.height || 56;
+          const fontSize = opts.fontSize || '28px';
+          const labelYOffset = opts.labelYOffset || 0;
+
+          const button = this.add
+            .rectangle(x, y, width, height, 0x1f2937, 0.95)
+            .setStrokeStyle(2, 0xffffff, 1)
+            .setInteractive({ useHandCursor: true });
+          const label = this.add.text(x, y + labelYOffset, text, {
             color: '#ffffff',
-            fontSize: '28px',
+            fontSize: fontSize,
             fontStyle: 'bold'
           });
           label.setOrigin(0.5);
@@ -1152,6 +1632,7 @@
         }
 
         startGame() {
+          this.closeShop();
           this.menuContainer.setVisible(false);
           this.gameOverContainer.setVisible(false);
           this.hudContainer.setVisible(true);
@@ -1161,11 +1642,13 @@
           if (this.scene.isActive('GameScene')) {
             this.scene.stop('GameScene');
           }
-          this.scene.launch('GameScene');
+          this.scene.launch('GameScene', { profile: this.playerProfile });
         }
 
         showMainMenu() {
+          this.closeShop();
           this.menuBestText.setText('Best: ' + this.bestScore);
+          this.refreshShopButtons();
           this.menuContainer.setVisible(true);
           this.gameOverContainer.setVisible(false);
           this.hudContainer.setVisible(false);
@@ -1228,6 +1711,14 @@
             return;
           }
 
+          if (typeof data.lives === 'number' && data.lives < this.lastHudLives) {
+            for (let i = data.lives; i < this.lastHudLives; i += 1) {
+              if (this.lifeIcons[i]) {
+                this.animateLifeLossIcon(this.lifeIcons[i]);
+              }
+            }
+          }
+
           for (let i = 0; i < this.lifeIcons.length; i += 1) {
             if (i < data.lives) {
               this.lifeIcons[i].setAlpha(1);
@@ -1248,6 +1739,8 @@
           } else {
             this.comboHud.setVisible(false);
           }
+
+          this.lastHudLives = data.lives;
         }
 
         onLevelUp() {
@@ -1274,6 +1767,7 @@
 
         onGameOver(payload) {
           const finalScore = payload.finalScore || 0;
+          const coinsEarned = payload.coinsEarned || 0;
           this.hudContainer.setVisible(false);
           this.gameOverContainer.setVisible(true);
 
@@ -1286,9 +1780,31 @@
 
           this.finalScoreText.setText('Final: ' + finalScore);
           this.bestScoreText.setText('Best: ' + this.bestScore);
+          this.coinsEarnedText.setText('Coins Earned: +' + coinsEarned);
           this.newBestText.setVisible(isNewBest);
 
+          if (coinsEarned > 0) {
+            this.playerProfile.coins += coinsEarned;
+            this.playerProfile = normalizeProfile(this.playerProfile);
+            this.refreshShopButtons();
+            this.savePlayerProfile();
+          }
+
           safeSendScore(finalScore);
+        }
+
+        async loadPlayerProfile() {
+          this.playerProfile = await safeCloudLoadProfile();
+          if (this.playerProfile.coins < DEBUG_COIN_GRANT) {
+            this.playerProfile.coins = DEBUG_COIN_GRANT;
+            this.playerProfile = normalizeProfile(this.playerProfile);
+            this.savePlayerProfile();
+          }
+          this.refreshShopButtons();
+        }
+
+        async savePlayerProfile() {
+          await safeCloudSaveProfile(this.playerProfile);
         }
 
         async loadBestScoreFromCloud() {
