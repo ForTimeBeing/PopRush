@@ -207,7 +207,6 @@
       const MAX_ACTIVE_BUBBLES = 25;
 
       const PROFILE_STORAGE_KEY = 'pop_rush_profile';
-      const DEBUG_COIN_GRANT = 10000000;
 
       const SKIN_THEMES = {
         classic: {
@@ -2074,11 +2073,6 @@
 
         async loadPlayerProfile() {
           this.playerProfile = await safeCloudLoadProfile();
-          if (this.playerProfile.coins < DEBUG_COIN_GRANT) {
-            this.playerProfile.coins = DEBUG_COIN_GRANT;
-            this.playerProfile = normalizeProfile(this.playerProfile);
-            this.savePlayerProfile();
-          }
           this.refreshShopButtons();
         }
 
