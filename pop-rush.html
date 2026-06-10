@@ -1,0 +1,1309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Pop Rush</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #0a0a0a;
+        overflow: hidden;
+      }
+
+      #game-root {
+        width: 100%;
+        height: 100%;
+        display: grid;
+        place-items: center;
+      }
+
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game-root"></div>
+
+    <script src="https://www.youtube.com/game_api/v1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+    <script>
+      function safeFirstFrameReady() {
+        if (
+          window.ytgame &&
+          ytgame.game &&
+          typeof ytgame.game.firstFrameReady === 'function'
+        ) {
+          ytgame.game.firstFrameReady();
+        }
+      }
+
+      function safeGameReady() {
+        if (
+          window.ytgame &&
+          ytgame.game &&
+          typeof ytgame.game.gameReady === 'function'
+        ) {
+          ytgame.game.gameReady();
+        }
+      }
+
+      function safeSendScore(score) {
+        if (
+          window.ytgame &&
+          ytgame.engagement &&
+          typeof ytgame.engagement.sendScore === 'function'
+        ) {
+          ytgame.engagement.sendScore(score);
+        }
+      }
+
+      async function safeCloudLoadBestScore() {
+        if (window.ytgame && ytgame.game && typeof ytgame.game.loadData === 'function') {
+          try {
+            const result = ytgame.game.loadData('pop_rush_best_score');
+            const data = result && typeof result.then === 'function' ? await result : result;
+
+            if (typeof data === 'number') {
+              return Math.max(0, Math.floor(data));
+            }
+
+            if (data && typeof data === 'object') {
+              const val = data.pop_rush_best_score ?? data.bestScore;
+              if (typeof val === 'number' && Number.isFinite(val)) {
+                return Math.max(0, Math.floor(val));
+              }
+            }
+          } catch (error) {
+            // Fall back to local storage below.
+          }
+        }
+
+        const local = localStorage.getItem('pop_rush_best_score');
+        const parsed = Number(local);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          return 0;
+        }
+        return Math.floor(parsed);
+      }
+
+      async function safeCloudSaveBestScore(bestScore) {
+        localStorage.setItem('pop_rush_best_score', String(bestScore));
+
+        if (window.ytgame && ytgame.game && typeof ytgame.game.saveData === 'function') {
+          try {
+            const result = ytgame.game.saveData('pop_rush_best_score', bestScore);
+            if (result && typeof result.then === 'function') {
+              await result;
+            }
+          } catch (error) {
+            // Local storage fallback is already written.
+          }
+        }
+      }
+
+      function safeIsAudioEnabled() {
+        if (
+          window.ytgame &&
+          ytgame.system &&
+          typeof ytgame.system.isAudioEnabled === 'function'
+        ) {
+          return !!ytgame.system.isAudioEnabled();
+        }
+        return true;
+      }
+
+      function safeOnAudioEnabledChange(callback) {
+        if (
+          window.ytgame &&
+          ytgame.system &&
+          typeof ytgame.system.onAudioEnabledChange === 'function'
+        ) {
+          ytgame.system.onAudioEnabledChange(callback);
+        }
+      }
+
+      function safeOnPause(callback) {
+        if (window.ytgame && ytgame.game && typeof ytgame.game.onPause === 'function') {
+          ytgame.game.onPause(callback);
+        }
+      }
+
+      function safeOnResume(callback) {
+        if (window.ytgame && ytgame.game && typeof ytgame.game.onResume === 'function') {
+          ytgame.game.onResume(callback);
+        }
+      }
+
+      class BootScene extends Phaser.Scene {
+        constructor() {
+          super('BootScene');
+        }
+
+        create() {
+          safeFirstFrameReady();
+
+          const centerX = this.cameras.main.width / 2;
+          const centerY = this.cameras.main.height / 2;
+          const barWidth = 280;
+          const barHeight = 22;
+
+          const barBg = this.add.graphics();
+          barBg.fillStyle(0x272727, 1);
+          barBg.fillRoundedRect(
+            centerX - barWidth / 2,
+            centerY - barHeight / 2,
+            barWidth,
+            barHeight,
+            10
+          );
+
+          const barFill = this.add.graphics();
+          const progress = { value: 0 };
+
+          const drawFill = () => {
+            barFill.clear();
+            barFill.fillStyle(0x55d6ff, 1);
+            barFill.fillRoundedRect(
+              centerX - barWidth / 2 + 3,
+              centerY - barHeight / 2 + 3,
+              (barWidth - 6) * progress.value,
+              barHeight - 6,
+              8
+            );
+          };
+
+          drawFill();
+
+          this.tweens.add({
+            targets: progress,
+            value: 1,
+            duration: 1000,
+            ease: 'Linear',
+            onUpdate: drawFill,
+            onComplete: () => {
+              this.scene.start('UIScene');
+            }
+          });
+        }
+      }
+
+      const BUBBLE_TYPES = {
+        NORMAL: { key: 'NORMAL', color: 0x3b82f6, radius: 30, points: 10 },
+        SMALL: { key: 'SMALL', color: 0x22d3ee, radius: 18, points: 25 },
+        SPLITTER: { key: 'SPLITTER', color: 0x22c55e, radius: 35, points: 5 },
+        BOMB: { key: 'BOMB', color: 0xef4444, radius: 28, points: 0 }
+      };
+
+      const PLAY_WIDTH = 480;
+      const PLAY_HEIGHT = 640;
+      const EDGE_PADDING = 40;
+      const HUD_SAFE_TOP = 108;
+      const BUBBLE_POOL_SIZE = 30;
+      const MAX_ACTIVE_BUBBLES = 25;
+
+      class GameScene extends Phaser.Scene {
+        constructor() {
+          super('GameScene');
+        }
+
+        create() {
+          this.cameras.main.setBackgroundColor('#051427');
+          console.log('GameScene started');
+
+          this.score = 0;
+          this.lives = 3;
+          this.combo = 0;
+          this.isGameOver = false;
+          this.isPaused = false;
+          this.audioEnabled = safeIsAudioEnabled();
+          this.bubbles = [];
+          this.difficultyLevel = 1;
+          this.elapsedSeconds = 0;
+          this.bubbleSpeed = 120;
+          this.spawnIntervalMs = 1200;
+          this.bombChance = 0.1;
+          this.nextSpawnAt = 0;
+          this.wobbleAmplitude = 15;
+          this.wobbleFrequency = 3.2;
+
+          this.levelConfigs = {
+            1: { spawnIntervalMs: 1200, speed: 120, bombChance: 0.1, doubleChance: 0 },
+            2: { spawnIntervalMs: 1100, speed: 135, bombChance: 0.1, doubleChance: 0 },
+            3: { spawnIntervalMs: 1000, speed: 150, bombChance: 0.1, doubleChance: 0 },
+            4: { spawnIntervalMs: 900, speed: 165, bombChance: 0.1, doubleChance: 0 },
+            5: { spawnIntervalMs: 800, speed: 185, bombChance: 0.1, doubleChance: 0 },
+            6: { spawnIntervalMs: 700, speed: 200, bombChance: 0.1, doubleChance: 0 },
+            7: { spawnIntervalMs: 600, speed: 220, bombChance: 0.18, doubleChance: 0 },
+            8: { spawnIntervalMs: 500, speed: 240, bombChance: 0.22, doubleChance: 0 },
+            9: { spawnIntervalMs: 420, speed: 260, bombChance: 0.25, doubleChance: 0 },
+            10: { spawnIntervalMs: 350, speed: 280, bombChance: 0.28, doubleChance: 0.24 }
+          };
+
+          this.createBackgroundEffects();
+          this.initBubblePool();
+
+          this.game.events.on('audioenabledchange', this.onAudioEnabledChange, this);
+
+          this.applyDifficultyConfig(this.difficultyLevel, false);
+
+          this.difficultyTimer = this.time.addEvent({
+            delay: 1000,
+            callback: this.onDifficultyTick,
+            callbackScope: this,
+            loop: true
+          });
+
+          this.emitHudUpdate();
+
+          this.events.once('shutdown', () => {
+            this.game.events.off('audioenabledchange', this.onAudioEnabledChange, this);
+          });
+        }
+
+        update(time, delta) {
+          if (this.isGameOver || this.isPaused) {
+            return;
+          }
+
+          const dt = delta / 1000;
+
+          if (time >= this.nextSpawnAt) {
+            this.spawnWave();
+            this.nextSpawnAt = time + this.spawnIntervalMs;
+          }
+
+          for (let i = this.bubbles.length - 1; i >= 0; i -= 1) {
+            const bubble = this.bubbles[i];
+            if (bubble.isPopping) {
+              continue;
+            }
+
+            if (bubble.vx || bubble.vy) {
+              bubble.x += bubble.vx * dt;
+              bubble.y += bubble.vy * dt;
+
+              if (bubble.damping > 0) {
+                const dampFactor = Math.max(0, 1 - bubble.damping * dt);
+                bubble.vx *= dampFactor;
+                bubble.vy *= dampFactor;
+              }
+
+              bubble.baseX = bubble.x;
+            }
+
+            bubble.age += dt;
+            bubble.y -= this.bubbleSpeed * dt;
+            bubble.x =
+              bubble.baseX +
+              Math.sin(bubble.age * this.wobbleFrequency + bubble.phase) *
+                this.wobbleAmplitude * (bubble.wobbleScale || 1);
+
+            if (bubble.y < HUD_SAFE_TOP) {
+              this.onBubbleEscaped(bubble);
+              this.destroyBubbleAt(i);
+            }
+          }
+        }
+
+        onDifficultyTick() {
+          if (this.isGameOver || this.isPaused) {
+            return;
+          }
+
+          this.elapsedSeconds += 1;
+          const targetLevel = Math.min(10, Math.floor(this.elapsedSeconds / 15) + 1);
+
+          if (targetLevel > this.difficultyLevel) {
+            this.difficultyLevel = targetLevel;
+            this.applyDifficultyConfig(this.difficultyLevel, true);
+          }
+
+          this.emitHudUpdate();
+        }
+
+        applyDifficultyConfig(level, showFlash) {
+          const cfg = this.levelConfigs[level] || this.levelConfigs[10];
+          this.spawnIntervalMs = cfg.spawnIntervalMs;
+          this.bubbleSpeed = cfg.speed;
+          this.bombChance = cfg.bombChance;
+          this.doubleChance = cfg.doubleChance;
+
+          if (showFlash) {
+            this.game.events.emit('levelup', { level: level });
+            this.playLevelUpSound();
+          }
+
+          this.emitHudUpdate();
+        }
+
+        spawnWave() {
+          if (this.isGameOver) {
+            return;
+          }
+
+          if (this.bubbles.length >= MAX_ACTIVE_BUBBLES) {
+            return;
+          }
+
+          this.spawnWeightedBubble();
+
+          if (
+            this.difficultyLevel === 10 &&
+            this.bubbles.length < MAX_ACTIVE_BUBBLES &&
+            Math.random() < this.doubleChance
+          ) {
+            this.spawnWeightedBubble();
+          }
+        }
+
+        spawnWeightedBubble() {
+          const roll = Math.random();
+          let type = BUBBLE_TYPES.NORMAL;
+          const smallChance = 0.15;
+          const splitterChance = 0.15;
+          const bombChance = this.bombChance;
+          const normalChance = Math.max(0, 1 - smallChance - splitterChance - bombChance);
+
+          if (roll < normalChance) {
+            type = BUBBLE_TYPES.NORMAL;
+          } else if (roll < normalChance + smallChance) {
+            type = BUBBLE_TYPES.SMALL;
+          } else if (roll < normalChance + smallChance + splitterChance) {
+            type = BUBBLE_TYPES.SPLITTER;
+          } else {
+            type = BUBBLE_TYPES.BOMB;
+          }
+
+          const x = Phaser.Math.Between(EDGE_PADDING, PLAY_WIDTH - EDGE_PADDING);
+          const y = PLAY_HEIGHT + 40;
+          this.createBubble(type, x, y);
+        }
+
+        createBubble(type, x, y, options) {
+          const opts = options || {};
+          if (this.bubbles.length >= MAX_ACTIVE_BUBBLES) {
+            return null;
+          }
+
+          const bubble = this.acquireBubble();
+          if (!bubble) {
+            return null;
+          }
+
+          bubble.x = x;
+          bubble.y = y;
+          bubble.setVisible(true);
+          bubble.setActive(true);
+
+          const gfx = bubble.gfx;
+          this.drawBubbleGraphics(gfx, type);
+
+          bubble.setSize(type.radius * 2, type.radius * 2);
+          bubble.setInteractive(
+            new Phaser.Geom.Circle(0, 0, Math.max(type.radius, 24)),
+            Phaser.Geom.Circle.Contains
+          );
+
+          bubble.typeDef = type;
+          bubble.baseX = x;
+          bubble.age = 0;
+          bubble.phase = Math.random() * Math.PI * 2;
+          bubble.isPopping = false;
+          bubble.vx = opts.vx || 0;
+          bubble.vy = opts.vy || 0;
+          bubble.damping = opts.damping || 0;
+          bubble.wobbleScale = typeof opts.wobbleScale === 'number' ? opts.wobbleScale : 1;
+          bubble.setScale(1);
+          bubble.setAlpha(1);
+
+          bubble.removeAllListeners('pointerdown');
+          bubble.on('pointerdown', () => {
+            this.onBubbleTapped(bubble);
+          });
+
+          this.bubbles.push(bubble);
+          return bubble;
+        }
+
+        onBubbleTapped(bubble) {
+          if (this.isGameOver || this.isPaused) {
+            return;
+          }
+
+          const index = this.bubbles.indexOf(bubble);
+          if (index === -1 || bubble.isPopping) {
+            return;
+          }
+
+          const type = bubble.typeDef;
+          const bubbleX = bubble.x;
+          const bubbleY = bubble.y;
+
+          if (type.key === BUBBLE_TYPES.BOMB.key) {
+            this.loseLife(1);
+            this.resetCombo();
+            this.showFloatingScoreText(bubbleX, bubbleY, '-LIFE!', '#ef4444');
+            this.cameras.main.flash(120, 255, 40, 40, false);
+            this.cameras.main.shake(200, 0.008);
+            this.playBombSound();
+            this.playPopAndDestroy(bubble, index);
+            return;
+          }
+
+          this.incrementCombo();
+          const multiplier = this.getComboMultiplier();
+          const totalPoints = type.points * multiplier;
+          this.score += totalPoints;
+          this.showFloatingScoreText(
+            bubbleX,
+            bubbleY,
+            '+' + type.points + 'x' + multiplier,
+            this.getScoreColor(type.key)
+          );
+          this.spawnPopParticles(bubbleX, bubbleY, type.color);
+          this.playPopSound(type.key);
+          this.emitHudUpdate();
+
+          if (type.key === BUBBLE_TYPES.SPLITTER.key) {
+            this.spawnSplitterChildren(bubbleX, bubbleY);
+          }
+
+          this.playPopAndDestroy(bubble, index);
+        }
+
+        onBubbleEscaped(bubble) {
+          if (
+            bubble.typeDef.key === BUBBLE_TYPES.NORMAL.key ||
+            bubble.typeDef.key === BUBBLE_TYPES.SPLITTER.key
+          ) {
+            this.loseLife(1);
+            this.resetCombo();
+          }
+        }
+
+        playPopAndDestroy(bubble, index) {
+          bubble.isPopping = true;
+          bubble.disableInteractive();
+
+          this.tweens.add({
+            targets: bubble,
+            scaleX: 1.4,
+            scaleY: 1.4,
+            alpha: 0,
+            duration: 150,
+            ease: 'Quad.Out',
+            onComplete: () => {
+              this.destroyBubbleAt(index, bubble);
+            }
+          });
+        }
+
+        spawnSplitterChildren(x, y) {
+          const offsets = [-20, 20];
+
+          for (let i = 0; i < offsets.length; i += 1) {
+            const drift = offsets[i];
+            const spawnX = Phaser.Math.Clamp(x, EDGE_PADDING, PLAY_WIDTH - EDGE_PADDING);
+            const spawnY = y + 10;
+
+            const child = this.createBubble(BUBBLE_TYPES.SMALL, spawnX, spawnY, {
+              wobbleScale: 0.65
+            });
+
+            if (!child) {
+              continue;
+            }
+
+            this.tweens.add({
+              targets: child,
+              x: Phaser.Math.Clamp(spawnX + drift, EDGE_PADDING, PLAY_WIDTH - EDGE_PADDING),
+              y: spawnY - 10,
+              duration: 160,
+              ease: 'Sine.Out',
+              onUpdate: () => {
+                child.baseX = child.x;
+              }
+            });
+          }
+        }
+
+        showFloatingScoreText(x, y, message, color) {
+          const text = this.add.text(x, y, message, {
+            color: color,
+            fontSize: '22px',
+            fontStyle: 'bold'
+          });
+          text.setOrigin(0.5);
+
+          this.tweens.add({
+            targets: text,
+            y: y - 42,
+            alpha: 0,
+            duration: 600,
+            ease: 'Cubic.Out',
+            onComplete: () => text.destroy()
+          });
+        }
+
+        getScoreColor(typeKey) {
+          if (typeKey === BUBBLE_TYPES.NORMAL.key) {
+            return '#60a5fa';
+          }
+          if (typeKey === BUBBLE_TYPES.SMALL.key) {
+            return '#22d3ee';
+          }
+          return '#22c55e';
+        }
+
+        incrementCombo() {
+          this.combo += 1;
+          if (this.combo === 5) {
+            this.cameras.main.flash(70, 255, 230, 140, false);
+            this.playComboThresholdSound(5);
+          } else if (this.combo === 10) {
+            this.cameras.main.flash(80, 255, 185, 120, false);
+            this.playComboThresholdSound(10);
+          } else if (this.combo === 20) {
+            this.cameras.main.flash(90, 198, 160, 255, false);
+            this.playComboThresholdSound(20);
+          }
+          this.emitHudUpdate();
+        }
+
+        resetCombo() {
+          this.combo = 0;
+          this.emitHudUpdate();
+        }
+
+        getComboMultiplier() {
+          if (this.combo >= 20) {
+            return 5;
+          }
+          if (this.combo >= 10) {
+            return 3;
+          }
+          if (this.combo >= 5) {
+            return 2;
+          }
+          return 1;
+        }
+
+        loseLife(amount) {
+          this.lives = Math.max(0, this.lives - amount);
+          this.emitHudUpdate();
+
+          if (this.lives <= 0) {
+            this.triggerGameOver();
+          }
+        }
+
+        triggerGameOver() {
+          if (this.isGameOver) {
+            return;
+          }
+
+          this.isGameOver = true;
+          if (this.difficultyTimer) {
+            this.difficultyTimer.remove(false);
+          }
+
+          for (let i = this.bubbles.length - 1; i >= 0; i -= 1) {
+            this.destroyBubbleAt(i);
+          }
+
+          this.playGameOverSound();
+
+          this.game.events.emit('gameover', { finalScore: this.score });
+        }
+
+        setPaused(paused) {
+          this.isPaused = paused;
+          if (this.difficultyTimer) {
+            this.difficultyTimer.paused = paused;
+          }
+
+          if (paused) {
+            this.tweens.pauseAll();
+          } else {
+            this.tweens.resumeAll();
+          }
+        }
+
+        createBackgroundEffects() {
+          const gradient = this.add.graphics();
+          gradient.fillGradientStyle(0x04162d, 0x04162d, 0x14446b, 0x14446b, 1, 1, 1, 1);
+          gradient.fillRect(0, 0, 480, 640);
+
+          this.lightRays = [];
+          for (let i = 0; i < 4; i += 1) {
+            const ray = this.add.rectangle(70 + i * 125, 360, 140, 880, 0xffffff, 0.045);
+            ray.setAngle(-19 + i * 3);
+            ray.setBlendMode(Phaser.BlendModes.SCREEN);
+            this.lightRays.push(ray);
+
+            this.tweens.add({
+              targets: ray,
+              x: ray.x + Phaser.Math.Between(-25, 25),
+              y: ray.y - Phaser.Math.Between(30, 60),
+              duration: Phaser.Math.Between(9000, 13000),
+              yoyo: true,
+              repeat: -1,
+              ease: 'Sine.InOut'
+            });
+          }
+
+          this.ambientDots = [];
+          for (let i = 0; i < 24; i += 1) {
+            const dot = this.add.circle(
+              Phaser.Math.Between(0, 480),
+              Phaser.Math.Between(0, 640),
+              Phaser.Math.Between(1, 3),
+              0xdff3ff,
+              Phaser.Math.FloatBetween(0.08, 0.18)
+            );
+            this.ambientDots.push(dot);
+
+            this.tweens.add({
+              targets: dot,
+              y: dot.y - Phaser.Math.Between(18, 42),
+              x: dot.x + Phaser.Math.Between(-10, 10),
+              alpha: Phaser.Math.FloatBetween(0.04, 0.14),
+              duration: Phaser.Math.Between(5000, 9000),
+              yoyo: true,
+              repeat: -1,
+              ease: 'Sine.InOut'
+            });
+          }
+        }
+
+        spawnPopParticles(x, y, color) {
+          const count = Phaser.Math.Between(6, 8);
+          for (let i = 0; i < count; i += 1) {
+            const particle = this.add.circle(x, y, Phaser.Math.Between(3, 6), color, 0.9);
+            const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+            const distance = Phaser.Math.Between(16, 42);
+
+            this.tweens.add({
+              targets: particle,
+              x: x + Math.cos(angle) * distance,
+              y: y + Math.sin(angle) * distance,
+              alpha: 0,
+              scaleX: 0.55,
+              scaleY: 0.55,
+              duration: Phaser.Math.Between(420, 760),
+              ease: 'Cubic.Out',
+              onComplete: () => particle.destroy()
+            });
+          }
+        }
+
+        onAudioEnabledChange(enabled) {
+          this.audioEnabled = !!enabled;
+        }
+
+        playPopSound(typeKey) {
+          let base = 500;
+          if (typeKey === BUBBLE_TYPES.SMALL.key) {
+            base = 720;
+          } else if (typeKey === BUBBLE_TYPES.SPLITTER.key) {
+            base = 580;
+          }
+
+          this.playTone(base, 0.07, 'sine', 0.06, 0);
+        }
+
+        playBombSound() {
+          this.playTone(120, 0.18, 'triangle', 0.1, 0);
+          this.playTone(68, 0.22, 'sawtooth', 0.08, 0.02);
+        }
+
+        playComboThresholdSound(threshold) {
+          if (threshold === 5) {
+            this.playTone(520, 0.08, 'sine', 0.07, 0);
+            this.playTone(620, 0.08, 'sine', 0.07, 0.08);
+          } else if (threshold === 10) {
+            this.playTone(560, 0.08, 'sine', 0.08, 0);
+            this.playTone(680, 0.08, 'sine', 0.08, 0.08);
+            this.playTone(820, 0.1, 'sine', 0.08, 0.16);
+          } else {
+            this.playTone(500, 0.08, 'square', 0.07, 0);
+            this.playTone(650, 0.08, 'square', 0.07, 0.08);
+            this.playTone(820, 0.08, 'square', 0.07, 0.16);
+            this.playTone(1040, 0.1, 'square', 0.07, 0.24);
+          }
+        }
+
+        playLevelUpSound() {
+          this.playTone(440, 0.08, 'sine', 0.07, 0);
+          this.playTone(550, 0.08, 'sine', 0.07, 0.08);
+          this.playTone(660, 0.1, 'sine', 0.07, 0.16);
+        }
+
+        playGameOverSound() {
+          this.playTone(420, 0.12, 'triangle', 0.08, 0);
+          this.playTone(320, 0.12, 'triangle', 0.08, 0.12);
+          this.playTone(220, 0.16, 'triangle', 0.08, 0.24);
+          this.playTone(140, 0.22, 'sawtooth', 0.07, 0.4);
+        }
+
+        playTone(freq, duration, type, volume, delay) {
+          if (!this.audioEnabled || !this.sound || !this.sound.context) {
+            return;
+          }
+
+          const ctx = this.sound.context;
+          const now = ctx.currentTime + (delay || 0);
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+
+          osc.type = type || 'sine';
+          osc.frequency.setValueAtTime(freq, now);
+
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume || 0.07), now + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now);
+          osc.stop(now + duration + 0.02);
+        }
+
+        emitHudUpdate() {
+          this.game.events.emit('hudupdate', {
+            lives: this.lives,
+            score: this.score,
+            combo: this.combo,
+            multiplier: this.getComboMultiplier(),
+            level: this.difficultyLevel,
+            elapsedSeconds: this.elapsedSeconds
+          });
+        }
+
+        destroyBubbleAt(index, expectedBubble) {
+          if (index < 0 || index >= this.bubbles.length) {
+            return;
+          }
+
+          const bubble = this.bubbles[index];
+          if (!bubble) {
+            return;
+          }
+
+          if (expectedBubble && bubble !== expectedBubble) {
+            const resolvedIndex = this.bubbles.indexOf(expectedBubble);
+            if (resolvedIndex === -1) {
+              return;
+            }
+            this.destroyBubbleAt(resolvedIndex);
+            return;
+          }
+
+          this.releaseBubble(bubble);
+          this.bubbles.splice(index, 1);
+        }
+
+        initBubblePool() {
+          this.bubblePool = [];
+          for (let i = 0; i < BUBBLE_POOL_SIZE; i += 1) {
+            const container = this.add.container(-9999, -9999);
+            const gfx = this.add.graphics();
+            container.add(gfx);
+            container.gfx = gfx;
+            container.inUse = false;
+            container.setVisible(false);
+            container.setActive(false);
+            this.bubblePool.push(container);
+          }
+        }
+
+        acquireBubble() {
+          for (let i = 0; i < this.bubblePool.length; i += 1) {
+            if (!this.bubblePool[i].inUse) {
+              this.bubblePool[i].inUse = true;
+              return this.bubblePool[i];
+            }
+          }
+          return null;
+        }
+
+        releaseBubble(bubble) {
+          bubble.disableInteractive();
+          bubble.setVisible(false);
+          bubble.setActive(false);
+          bubble.x = -9999;
+          bubble.y = -9999;
+          bubble.inUse = false;
+        }
+
+        drawBubbleGraphics(gfx, type) {
+          gfx.clear();
+
+          gfx.fillStyle(type.color, 0.78);
+          gfx.fillCircle(0, 0, type.radius);
+
+          gfx.lineStyle(2, 0xffffff, 0.22);
+          gfx.strokeCircle(0, 0, type.radius - 1);
+
+          gfx.fillStyle(0xffffff, 0.35);
+          gfx.fillCircle(-type.radius * 0.34, -type.radius * 0.34, Math.max(6, type.radius * 0.26));
+
+          gfx.fillStyle(0xffffff, 0.12);
+          gfx.fillCircle(type.radius * 0.18, type.radius * 0.22, Math.max(4, type.radius * 0.15));
+
+          if (type.key === BUBBLE_TYPES.BOMB.key) {
+            gfx.lineStyle(4, 0xffffff, 1);
+            const xSize = type.radius * 0.45;
+            gfx.lineBetween(-xSize, -xSize, xSize, xSize);
+            gfx.lineBetween(-xSize, xSize, xSize, -xSize);
+          }
+        }
+      }
+
+      class UIScene extends Phaser.Scene {
+        constructor() {
+          super('UIScene');
+        }
+
+        create() {
+          this.bestScoreKey = 'pop_rush_best_score';
+          this.bestScore = 0;
+          this.gameReadySent = false;
+          this.isPausedState = false;
+          this.audioEnabled = safeIsAudioEnabled();
+
+          this.createDecorativeLayer();
+          this.createHud();
+          this.createMainMenu();
+          this.createGameOverOverlay();
+          this.createPauseOverlay();
+
+          this.game.events.on('hudupdate', this.onHudUpdate, this);
+          this.game.events.on('gameover', this.onGameOver, this);
+          this.game.events.on('levelup', this.onLevelUp, this);
+
+          safeOnAudioEnabledChange((enabled) => {
+            this.audioEnabled = !!enabled;
+            this.game.events.emit('audioenabledchange', this.audioEnabled);
+          });
+          this.game.events.emit('audioenabledchange', this.audioEnabled);
+
+          safeOnPause(() => {
+            this.handlePause();
+          });
+
+          safeOnResume(() => {
+            this.handleResume();
+          });
+
+          this.showMainMenu();
+          this.loadBestScoreFromCloud();
+          this.events.on('shutdown', this.cleanupEvents, this);
+          this.events.on('destroy', this.cleanupEvents, this);
+        }
+
+        cleanupEvents() {
+          this.game.events.off('hudupdate', this.onHudUpdate, this);
+          this.game.events.off('gameover', this.onGameOver, this);
+          this.game.events.off('levelup', this.onLevelUp, this);
+        }
+
+        createDecorativeLayer() {
+          this.decorBubbles = [];
+          this.decorSpawnTimer = this.time.addEvent({
+            delay: 420,
+            callback: this.spawnDecorBubble,
+            callbackScope: this,
+            loop: true,
+            paused: true
+          });
+        }
+
+        spawnDecorBubble() {
+          const radius = Phaser.Math.Between(8, 24);
+          const x = Phaser.Math.Between(20, 460);
+          const bubble = this.add.circle(x, 680, radius, 0x9dd9ff, 0.28);
+          bubble.setStrokeStyle(1, 0xdbeafe, 0.4);
+          this.decorBubbles.push(bubble);
+
+          const drift = Phaser.Math.Between(-26, 26);
+          const rise = Phaser.Math.Between(220, 420);
+          this.tweens.add({
+            targets: bubble,
+            y: -30,
+            x: x + drift,
+            alpha: 0,
+            duration: Phaser.Math.Between(2600, 3800),
+            ease: 'Sine.Out',
+            onComplete: () => {
+              const idx = this.decorBubbles.indexOf(bubble);
+              if (idx !== -1) {
+                this.decorBubbles.splice(idx, 1);
+              }
+              bubble.destroy();
+            }
+          });
+        }
+
+        clearDecorBubbles() {
+          for (let i = 0; i < this.decorBubbles.length; i += 1) {
+            this.decorBubbles[i].destroy();
+          }
+          this.decorBubbles.length = 0;
+        }
+
+        createHud() {
+          this.hudContainer = this.add.container(0, 0);
+
+          this.lifeIcons = [];
+          for (let i = 0; i < 3; i += 1) {
+            const life = this.add.text(14 + i * 26, 14, '🫧', { fontSize: '24px' });
+            life.setPadding(0, 6, 0, 0);
+            this.lifeIcons.push(life);
+            this.hudContainer.add(life);
+          }
+
+          this.scoreHud = this.add.text(240, 8, '0', {
+            color: '#ffffff',
+            fontSize: '40px',
+            fontStyle: 'bold'
+          });
+          this.scoreHud.setOrigin(0.5, 0);
+          this.hudContainer.add(this.scoreHud);
+
+          this.comboHud = this.add.text(240, 52, 'COMBO x5!', {
+            color: '#fde047',
+            fontSize: '24px',
+            fontStyle: 'bold'
+          });
+          this.comboHud.setOrigin(0.5, 0);
+          this.comboHud.setVisible(false);
+          this.hudContainer.add(this.comboHud);
+
+          this.levelHud = this.add.text(466, 10, 'Lv 1', {
+            color: '#dbeafe',
+            fontSize: '16px',
+            fontStyle: 'bold'
+          });
+          this.levelHud.setOrigin(1, 0);
+          this.hudContainer.add(this.levelHud);
+
+          this.timerHud = this.add.text(466, 30, '00:00', {
+            color: '#ffffff',
+            fontSize: '16px'
+          });
+          this.timerHud.setOrigin(1, 0);
+          this.hudContainer.add(this.timerHud);
+
+          this.hudContainer.setVisible(false);
+        }
+
+        createMainMenu() {
+          this.menuContainer = this.add.container(0, 0);
+
+          const menuBlock = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.34).setInteractive();
+          const title = this.add.text(240, 198, 'POP RUSH 🫧', {
+            color: '#ffffff',
+            fontSize: '56px',
+            fontStyle: 'bold'
+          });
+          title.setOrigin(0.5);
+          title.setPadding(0, 10, 0, 0);
+
+          this.menuBestText = this.add.text(240, 278, 'Best: ' + this.bestScore, {
+            color: '#fbbf24',
+            fontSize: '28px'
+          });
+          this.menuBestText.setOrigin(0.5);
+
+          this.tapToPlay = this.add.text(240, 410, 'TAP TO PLAY', {
+            color: '#ffffff',
+            fontSize: '34px',
+            fontStyle: 'bold'
+          });
+          this.tapToPlay.setOrigin(0.5);
+
+          this.tweens.add({
+            targets: this.tapToPlay,
+            alpha: 0.3,
+            duration: 1300,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.InOut'
+          });
+
+          menuBlock.on('pointerdown', () => {
+            this.startGame();
+          });
+
+          this.menuContainer.add([menuBlock, title, this.menuBestText, this.tapToPlay]);
+        }
+
+        createGameOverOverlay() {
+          this.gameOverContainer = this.add.container(0, 0);
+          const dim = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.7);
+          const overTitle = this.add.text(240, 196, 'GAME OVER', {
+            color: '#ef4444',
+            fontSize: '64px',
+            fontStyle: 'bold'
+          });
+          overTitle.setOrigin(0.5);
+
+          this.finalScoreText = this.add.text(240, 274, 'Final: 0', {
+            color: '#ffffff',
+            fontSize: '34px'
+          });
+          this.finalScoreText.setOrigin(0.5);
+
+          this.bestScoreText = this.add.text(240, 318, 'Best: 0', {
+            color: '#fbbf24',
+            fontSize: '30px',
+            fontStyle: 'bold'
+          });
+          this.bestScoreText.setOrigin(0.5);
+
+          this.newBestText = this.add.text(240, 358, 'NEW BEST! 🏆', {
+            color: '#fbbf24',
+            fontSize: '30px',
+            fontStyle: 'bold'
+          });
+          this.newBestText.setOrigin(0.5);
+          this.newBestText.setVisible(false);
+
+          const playAgain = this.createButton(240, 436, 'PLAY AGAIN');
+          playAgain.on('pointerdown', () => {
+            this.startGame();
+          });
+
+          const mainMenu = this.createButton(240, 506, 'MAIN MENU');
+          mainMenu.on('pointerdown', () => {
+            this.showMainMenu();
+          });
+
+          this.gameOverContainer.add([
+            dim,
+            overTitle,
+            this.finalScoreText,
+            this.bestScoreText,
+            this.newBestText,
+            playAgain,
+            playAgain.label,
+            mainMenu,
+            mainMenu.label
+          ]);
+          this.gameOverContainer.setVisible(false);
+        }
+
+        createPauseOverlay() {
+          this.pauseOverlay = this.add.container(0, 0);
+          const dim = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.55);
+          const label = this.add.text(240, 320, 'PAUSED', {
+            color: '#ffffff',
+            fontSize: '68px',
+            fontStyle: 'bold'
+          });
+          label.setOrigin(0.5);
+          this.pauseOverlay.add([dim, label]);
+          this.pauseOverlay.setDepth(1000);
+          this.pauseOverlay.setVisible(false);
+        }
+
+        createButton(x, y, text) {
+          const button = this.add.rectangle(x, y, 240, 56, 0x1f2937, 0.95).setStrokeStyle(2, 0xffffff, 1).setInteractive({ useHandCursor: true });
+          const label = this.add.text(x, y, text, {
+            color: '#ffffff',
+            fontSize: '28px',
+            fontStyle: 'bold'
+          });
+          label.setOrigin(0.5);
+          button.label = label;
+
+          button.on('pointerover', () => {
+            button.fillColor = 0x374151;
+          });
+          button.on('pointerout', () => {
+            button.fillColor = 0x1f2937;
+          });
+          return button;
+        }
+
+        startGame() {
+          this.menuContainer.setVisible(false);
+          this.gameOverContainer.setVisible(false);
+          this.hudContainer.setVisible(true);
+          this.decorSpawnTimer.paused = true;
+          this.clearDecorBubbles();
+
+          if (this.scene.isActive('GameScene')) {
+            this.scene.stop('GameScene');
+          }
+          this.scene.launch('GameScene');
+        }
+
+        showMainMenu() {
+          this.menuBestText.setText('Best: ' + this.bestScore);
+          this.menuContainer.setVisible(true);
+          this.gameOverContainer.setVisible(false);
+          this.hudContainer.setVisible(false);
+
+          if (this.scene.isActive('GameScene')) {
+            this.scene.stop('GameScene');
+          }
+
+          this.decorSpawnTimer.paused = false;
+
+          if (!this.gameReadySent) {
+            this.gameReadySent = true;
+            this.time.delayedCall(0, () => {
+              safeGameReady();
+            });
+          }
+        }
+
+        handlePause() {
+          if (this.isPausedState) {
+            return;
+          }
+          this.isPausedState = true;
+          this.pauseOverlay.setVisible(true);
+
+          if (this.scene.isActive('GameScene')) {
+            const gameScene = this.scene.get('GameScene');
+            if (gameScene && typeof gameScene.setPaused === 'function') {
+              gameScene.setPaused(true);
+            }
+          }
+
+          this.decorSpawnTimer.paused = true;
+          this.tweens.pauseAll();
+        }
+
+        handleResume() {
+          if (!this.isPausedState) {
+            return;
+          }
+
+          this.isPausedState = false;
+          this.pauseOverlay.setVisible(false);
+          this.tweens.resumeAll();
+
+          if (this.scene.isActive('GameScene')) {
+            const gameScene = this.scene.get('GameScene');
+            if (gameScene && typeof gameScene.setPaused === 'function') {
+              gameScene.setPaused(false);
+            }
+          }
+
+          if (this.menuContainer.visible) {
+            this.decorSpawnTimer.paused = false;
+          }
+        }
+
+        onHudUpdate(data) {
+          if (!this.hudContainer.visible) {
+            return;
+          }
+
+          for (let i = 0; i < this.lifeIcons.length; i += 1) {
+            if (i < data.lives) {
+              this.lifeIcons[i].setAlpha(1);
+              this.lifeIcons[i].setScale(1);
+            } else {
+              this.lifeIcons[i].setAlpha(0.22);
+              this.lifeIcons[i].setScale(0.95);
+            }
+          }
+
+          this.scoreHud.setText(String(data.score));
+          this.levelHud.setText('Lv ' + data.level);
+          this.timerHud.setText(this.formatTime(data.elapsedSeconds));
+
+          if (data.combo >= 5) {
+            this.comboHud.setText('COMBO x' + data.combo + '!');
+            this.comboHud.setVisible(true);
+          } else {
+            this.comboHud.setVisible(false);
+          }
+        }
+
+        onLevelUp() {
+          if (!this.hudContainer.visible) {
+            return;
+          }
+
+          const levelFlash = this.add.text(240, 300, 'LEVEL UP! ⬆️', {
+            color: '#f8fafc',
+            fontSize: '34px',
+            fontStyle: 'bold'
+          });
+          levelFlash.setOrigin(0.5);
+
+          this.tweens.add({
+            targets: levelFlash,
+            alpha: 0,
+            y: 260,
+            duration: 560,
+            ease: 'Cubic.Out',
+            onComplete: () => levelFlash.destroy()
+          });
+        }
+
+        onGameOver(payload) {
+          const finalScore = payload.finalScore || 0;
+          this.hudContainer.setVisible(false);
+          this.gameOverContainer.setVisible(true);
+
+          let isNewBest = false;
+          if (finalScore > this.bestScore) {
+            this.bestScore = finalScore;
+            safeCloudSaveBestScore(this.bestScore);
+            isNewBest = true;
+          }
+
+          this.finalScoreText.setText('Final: ' + finalScore);
+          this.bestScoreText.setText('Best: ' + this.bestScore);
+          this.newBestText.setVisible(isNewBest);
+
+          safeSendScore(finalScore);
+        }
+
+        async loadBestScoreFromCloud() {
+          this.bestScore = await safeCloudLoadBestScore();
+          if (this.menuBestText) {
+            this.menuBestText.setText('Best: ' + this.bestScore);
+          }
+          if (this.bestScoreText) {
+            this.bestScoreText.setText('Best: ' + this.bestScore);
+          }
+        }
+
+        formatTime(totalSeconds) {
+          const minutes = Math.floor(totalSeconds / 60);
+          const seconds = totalSeconds % 60;
+          const mm = String(minutes).padStart(2, '0');
+          const ss = String(seconds).padStart(2, '0');
+          return mm + ':' + ss;
+        }
+      }
+
+      const config = {
+        type: Phaser.AUTO,
+        parent: 'game-root',
+        width: 480,
+        height: 640,
+        scene: [BootScene, GameScene, UIScene],
+        scale: {
+          mode: Phaser.Scale.FIT,
+          autoCenter: Phaser.Scale.CENTER_BOTH
+        }
+      };
+
+      new Phaser.Game(config);
+    </script>
+  </body>
+</html>
