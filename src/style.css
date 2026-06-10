@@ -18,7 +18,5 @@ body {
 }
 
 #app canvas {
-  max-width: min(100vw, 800px);
-  max-height: min(100vh, 450px);
   border: 1px solid #1f2937;
 }
