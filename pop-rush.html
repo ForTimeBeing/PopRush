@@ -247,6 +247,8 @@
           this.createBackgroundEffects();
           this.initBubblePool();
 
+          this.input.on('pointerdown', this.handlePointerDown, this);
+
           this.game.events.on('audioenabledchange', this.onAudioEnabledChange, this);
 
           this.applyDifficultyConfig(this.difficultyLevel, false);
@@ -262,7 +264,33 @@
 
           this.events.once('shutdown', () => {
             this.game.events.off('audioenabledchange', this.onAudioEnabledChange, this);
+            this.input.off('pointerdown', this.handlePointerDown, this);
           });
+        }
+
+        handlePointerDown(pointer) {
+          if (this.isGameOver || this.isPaused) {
+            return;
+          }
+
+          const px = typeof pointer.worldX === 'number' ? pointer.worldX : pointer.x;
+          const py = typeof pointer.worldY === 'number' ? pointer.worldY : pointer.y;
+
+          for (let i = this.bubbles.length - 1; i >= 0; i -= 1) {
+            const bubble = this.bubbles[i];
+            if (!bubble || bubble.isPopping || !bubble.typeDef) {
+              continue;
+            }
+
+            const extraHitPadding = 14;
+            const hitRadius = bubble.typeDef.radius + extraHitPadding;
+            const dx = px - bubble.x;
+            const dy = py - bubble.y;
+            if (dx * dx + dy * dy <= hitRadius * hitRadius) {
+              this.onBubbleTapped(bubble);
+              return;
+            }
+          }
         }
 
         update(time, delta) {
@@ -404,10 +432,6 @@
           this.drawBubbleGraphics(gfx, type);
 
           bubble.setSize(type.radius * 2, type.radius * 2);
-          bubble.setInteractive(
-            new Phaser.Geom.Circle(0, 0, Math.max(type.radius, 24)),
-            Phaser.Geom.Circle.Contains
-          );
 
           bubble.typeDef = type;
           bubble.baseX = x;
@@ -420,11 +444,6 @@
           bubble.wobbleScale = typeof opts.wobbleScale === 'number' ? opts.wobbleScale : 1;
           bubble.setScale(1);
           bubble.setAlpha(1);
-
-          bubble.removeAllListeners('pointerdown');
-          bubble.on('pointerdown', () => {
-            this.onBubbleTapped(bubble);
-          });
 
           this.bubbles.push(bubble);
           return bubble;
